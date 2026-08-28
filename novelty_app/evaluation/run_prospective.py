@@ -41,7 +41,12 @@ DEFAULT_METHODS = [
     "random_target_control",
 ]
 
-_LLM_REQUIRED_METHODS = {"orchestrator", "single_shot_llm", "retrieval_summary_direct"}
+_LLM_REQUIRED_METHODS = {
+    "orchestrator",
+    "single_shot_llm",
+    "cue_retrieval_generation",
+    "retrieval_summary_direct",
+}
 
 
 @dataclass

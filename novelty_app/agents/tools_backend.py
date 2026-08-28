@@ -31,7 +31,7 @@ class PapersBatchArgs(BaseModel):
 
 class EvidencePackArgs(BaseModel):
     snapshot_id: str | None = Field(default=None, description="Snapshot id. If omitted, latest snapshot is used.")
-    target_type: str = Field(description="Target type: 'gap' or 'cluster_pair'.")
+    target_type: str = Field(description="Target type: 'gap', 'cluster_pair', or cue-only 'cue'.")
     gap_id: str | None = Field(default=None, description="Gap id when target_type='gap'.")
     cluster_a: int | None = Field(default=None, description="Cluster A id when target_type='cluster_pair'.")
     cluster_b: int | None = Field(default=None, description="Cluster B id when target_type='cluster_pair'.")

@@ -235,12 +235,13 @@ The standard methods are:
 | --- | --- |
 | `orchestrator` | Multi-step evidence-grounded LangGraph workflow. |
 | `single_shot_llm` | Single-pass LLM generator. |
+| `cue_retrieval_generation` | Cue-only retrieve-then-generate LLM baseline; receives no frontier structure. |
 | `retrieval_summary_direct` | LLM generator based directly on retrieval summaries. |
 | `heuristic_bridge` | Deterministic bridge-style baseline. |
 | `pack_query_baseline` | Deterministic retrieval-oriented baseline derived from the evidence pack. |
 | `random_target_control` | Control that breaks the intended target relationship. |
 
-`orchestrator`, `single_shot_llm`, and `retrieval_summary_direct` require `OPENAI_API_KEY`. The deterministic methods make a useful service and data smoke test without an API key.
+`orchestrator`, `single_shot_llm`, `cue_retrieval_generation`, and `retrieval_summary_direct` require `OPENAI_API_KEY`. The deterministic methods make a useful service and data smoke test without an API key. Because `cue_retrieval_generation` is defined by cue-only retrieval, select it only when a discovery cue and cue-source snapshot are configured.
 
 ### Reproducible smoke run
 
@@ -311,6 +312,16 @@ python -m novelty_app.evaluation.run_retrospective `
 ```
 
 The cue is not literature evidence and should not be cited as support. It reranks eligible future papers rather than hard-filtering them, and cue-aware metrics are reported when one is supplied.
+
+`cue_retrieval_generation` provides the conventional retrieval-first comparison. It retrieves historical evidence using only the normalized discovery cue (the top-ranked semantic cue results plus the cue's compiled lexical queries) and passes those papers directly to the structured LLM generator. The assigned gap or cluster pair is retained only as the evaluation label and is not sent to retrieval, retrieval seeding, or generation. This differs from `retrieval_summary_direct`, which retrieves the assigned frontier evidence pack and then summarizes it before generation.
+
+To run this baseline over the archived four-domain nanomedicine benchmark and place each result alongside the existing methods under `data/nanomedicine/baseline_runs/<domain>/cue_retrieval_generation`, use:
+
+```powershell
+python -m novelty_app.evaluation.run_nanomedicine_baselines `
+  --qwen-base-url http://192.168.2.35:8000 `
+  --methods cue_retrieval_generation
+```
 
 For valid comparisons:
 

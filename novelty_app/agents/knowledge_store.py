@@ -1286,11 +1286,14 @@ class KnowledgeStore:
         sample_n: int,
         seed_value: Any,
         request_payload: Dict[str, Any],
+        selection_strategy: str = "sample",
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if top_k < 1:
             raise ValueError("cue_similarity_top_k must be >= 1.")
         if sample_n < 0:
             raise ValueError("cue_similarity_sample_n must be >= 0.")
+        if selection_strategy not in {"sample", "top"}:
+            raise ValueError("cue similarity selection_strategy must be 'sample' or 'top'.")
 
         cue_source_snapshot = self.get_snapshot(cue_source_snapshot_id)
         source_scope = self._snapshot_embedding_scope(cue_source_snapshot)
@@ -1365,15 +1368,18 @@ class KnowledgeStore:
                     continue
             candidate_pool.append(candidate)
 
-        seed_int = self._cue_similarity_seed_int(seed_value, request_payload)
         sample_size = min(int(sample_n), len(candidate_pool))
         sampled_candidates: List[Dict[str, Any]] = []
         if sample_size > 0:
-            rng = random.Random(seed_int)
-            if sample_size >= len(candidate_pool):
-                sampled_candidates = list(candidate_pool)
+            if selection_strategy == "top":
+                sampled_candidates = list(candidate_pool[:sample_size])
             else:
-                sampled_candidates = rng.sample(candidate_pool, sample_size)
+                seed_int = self._cue_similarity_seed_int(seed_value, request_payload)
+                if sample_size >= len(candidate_pool):
+                    sampled_candidates = list(candidate_pool)
+                else:
+                    rng = random.Random(seed_int)
+                    sampled_candidates = rng.sample(candidate_pool, sample_size)
 
         sampled_ids = [str(candidate["paper_id"]) for candidate in sampled_candidates]
         sampled_records = self._fetch_papers_by_ids(cue_source_snapshot_id, sampled_ids)
@@ -1395,6 +1401,7 @@ class KnowledgeStore:
             "candidate_count": len(candidate_pool),
             "top_k": int(top_k),
             "sample_n": int(sample_n),
+            "selection_strategy": selection_strategy,
             "filtered_by_cutoff": int(filtered_by_cutoff),
             "sampled_ids": sampled_ids,
         }
@@ -1421,10 +1428,16 @@ class KnowledgeStore:
             boundary = min(boundary, 8) if boundary else 8
             diverse = 0
 
-        if target_type not in {"gap", "cluster_pair"}:
-            raise ValueError("target_type must be 'gap' or 'cluster_pair'")
+        if target_type not in {"gap", "cluster_pair", "cue"}:
+            raise ValueError("target_type must be 'gap', 'cluster_pair', or 'cue'")
         if discovery_cue is not None and not cue_source_snapshot_id:
             raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
+        if target_type == "cue" and discovery_cue is None:
+            raise ValueError("discovery_cue is required for target_type='cue'.")
+        if target_type == "cue":
+            exemplars = 0
+            boundary = 0
+            diverse = 0
 
         resolved_required_paper_source_snapshot_id = snapshot_id
         if required_paper_source_snapshot_id:
@@ -1434,6 +1447,7 @@ class KnowledgeStore:
             )
 
         selected: List[Dict[str, Any]] = []
+        selected_by_id: Dict[str, Dict[str, Any]] = {}
         seen: set[str] = set()
 
         def add_many(records: Iterable[Dict[str, Any]], source: str, max_new: Optional[int] = None) -> int:
@@ -1442,7 +1456,22 @@ class KnowledgeStore:
                 if max_new is not None and added >= max_new:
                     break
                 pid = str(rec.get("paper_id") or "")
-                if not pid or pid in seen:
+                if not pid:
+                    continue
+                if pid in seen:
+                    existing = selected_by_id.get(pid)
+                    if existing is not None:
+                        existing_sources = existing.get("selection_sources") or []
+                        if not isinstance(existing_sources, list):
+                            existing_sources = [str(existing_sources)]
+                        if source not in existing_sources:
+                            existing["selection_sources"] = [*existing_sources, source]
+                        incoming_meta = rec.get("selection_meta")
+                        if isinstance(incoming_meta, dict):
+                            existing_meta = existing.get("selection_meta")
+                            if not isinstance(existing_meta, dict):
+                                existing_meta = {}
+                            existing["selection_meta"] = {**existing_meta, **incoming_meta}
                     continue
                 enriched = dict(rec)
                 sources = enriched.get("selection_sources") or []
@@ -1450,6 +1479,7 @@ class KnowledgeStore:
                     sources = [str(sources)]
                 enriched["selection_sources"] = [*sources, source]
                 selected.append(enriched)
+                selected_by_id[pid] = enriched
                 seen.add(pid)
                 added += 1
             return added
@@ -1516,7 +1546,7 @@ class KnowledgeStore:
                 for cid in touched_clusters:
                     add_many(self._query_cluster_papers(snapshot_id, cid, per_cluster), f"cluster_{cid}_exemplar")
 
-        else:
+        elif target_type == "cluster_pair":
             cluster_a = _to_int(req.get("cluster_a"))
             cluster_b = _to_int(req.get("cluster_b"))
             if cluster_a is None or cluster_b is None:
@@ -1551,6 +1581,12 @@ class KnowledgeStore:
                     added = add_many(self._query_gap_papers(snapshot_id, gid, per_gap), f"gap_{gid}_boundary", max_new=remaining_boundary)
                     remaining_boundary -= added
 
+        else:
+            # Cue-only retrieval intentionally omits graph targets. It supports a
+            # conventional retrieve-then-generate baseline against the same
+            # historical corpus and cue machinery used by the agentic methods.
+            meta["cue_only_retrieval"] = True
+
         if diverse > 0:
             add_many(self._query_diverse_papers(snapshot_id, seen, diverse), "diverse")
 
@@ -1561,6 +1597,7 @@ class KnowledgeStore:
                 discovery_cue=discovery_cue,
                 top_k=cue_similarity_top_k,
                 sample_n=cue_similarity_sample_n,
+                selection_strategy="top" if target_type == "cue" else "sample",
                 seed_value=cue_similarity_seed,
                 request_payload=req,
             )
@@ -1569,9 +1606,16 @@ class KnowledgeStore:
             meta["cue_full_similarity_stats"] = cue_similarity_stats
 
         if cue_queries:
+            cue_query_limit = max(8, len(cue_queries) * 3)
             add_many(
-                self._query_counter_terms(snapshot_id, cue_queries, max(8, len(cue_queries) * 3), seen),
+                self._query_counter_terms(
+                    snapshot_id,
+                    cue_queries,
+                    cue_query_limit + len(seen),
+                    set(),
+                ),
                 "discovery_cue_query",
+                max_new=cue_query_limit,
             )
             meta["discovery_cue_queries"] = cue_queries
 

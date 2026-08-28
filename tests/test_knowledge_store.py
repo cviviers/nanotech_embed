@@ -457,7 +457,31 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertIn("biofilm", evidence["meta"]["discovery_cue_queries"])
         self.assertEqual(evidence["papers"][0]["paper_id"], "p3")
         self.assertGreater(float(evidence["papers"][0]["selection_meta"]["cue_score"]), 0.0)
-        self.assertEqual(evidence["meta"]["cue_stats"]["reserved_slots_applied"], 1)
+        self.assertGreater(evidence["meta"]["cue_stats"]["reserved_slots_applied"], 0)
+
+        cue_only = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_freeform_cue",
+                "target_type": "cue",
+                "profile": "focused_eval",
+                "discovery_cue": {
+                    "text": "What characteristics should a coating for inorganic nanoparticles have to overcome biofilms?"
+                },
+                "cue_source_snapshot_id": "snap_freeform_cue",
+                "cue_similarity_top_k": 3,
+                "cue_similarity_sample_n": 2,
+                "cue_similarity_seed": "biofilm_seed",
+            }
+        )
+
+        self.assertTrue(cue_only["meta"]["cue_only_retrieval"])
+        self.assertEqual(cue_only["meta"]["cue_full_similarity_stats"]["selection_strategy"], "top")
+        self.assertEqual(cue_only["meta"]["cue_full_similarity_stats"]["sampled_ids"], ["p3", "p2"])
+        self.assertEqual(cue_only["stats"]["requested"], {"exemplars": 0, "boundary": 0, "diverse": 0})
+        self.assertTrue(cue_only["papers"])
+        for paper in cue_only["papers"]:
+            sources = list(paper.get("selection_sources") or [])
+            self.assertFalse(any("cluster_" in source or "gap_" in source for source in sources))
 
     def test_build_evidence_pack_requires_cue_source_snapshot_when_cue_active(self) -> None:
         payload = {

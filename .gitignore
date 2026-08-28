@@ -16,6 +16,11 @@ venv/*
 .streamlit/*
 
 data/*
+!data/nanomedicine/
+data/nanomedicine/*
+!data/nanomedicine/baseline_runs/
+data/nanomedicine/baseline_runs/*
+
 assement_app/reviews/*
 paper/*
 media/*

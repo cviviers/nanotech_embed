@@ -11,7 +11,11 @@ from novelty_app.agents.orchestrator_langgraph import (
     node_explain,
     node_publish,
 )
-from novelty_app.evaluation.generators import GenerationContext, generate_single_shot_llm
+from novelty_app.evaluation.generators import (
+    GenerationContext,
+    generate_cue_retrieval_generation,
+    generate_single_shot_llm,
+)
 from novelty_app.evaluation.judge import (
     CriterionScore,
     HypothesisIdeaScore,
@@ -191,6 +195,53 @@ class LangchainTracingTests(unittest.TestCase):
             backend.evidence_pack_calls[0]["required_paper_source_snapshot_id"],
             "snapshot_full_77",
         )
+
+    def test_cue_retrieval_generation_does_not_send_frontier_target_to_retrieval(self) -> None:
+        backend = _FakeBackend()
+        context = GenerationContext(
+            backend=backend,
+            snapshot_id="snapshot_historical",
+            target={"target_type": "gap", "gap_id": "secret_gap"},
+            openai_api_key="test-key",
+            model_name="test-model",
+            discovery_cue={"text": "Find a nanoparticle system that detects DNA and RNA"},
+            cue_source_snapshot_id="snapshot_historical",
+            cue_similarity_top_k=20,
+            cue_similarity_sample_n=6,
+            cue_similarity_seed="seed_1",
+            hypotheses_per_target=1,
+        )
+        fake_response = HypothesesOut(
+            hypotheses=[
+                Hypothesis(
+                    id="hyp_1",
+                    title="Dual nucleic-acid nanosensor",
+                    bridge_type="biosensing",
+                    mechanistic_rationale="Use orthogonal probes for DNA and RNA detection.",
+                    citations=["p1"],
+                )
+            ]
+        )
+        fake_structured = _FakeStructuredInvoker(fake_response)
+        _FakeChatOpenAI.next_structured = fake_structured
+
+        with patch("novelty_app.evaluation.generators.ChatOpenAI", _FakeChatOpenAI):
+            generated, meta = generate_cue_retrieval_generation(context)
+
+        request = backend.evidence_pack_calls[0]
+        self.assertEqual(request["target_type"], "cue")
+        self.assertNotIn("gap_id", request)
+        self.assertNotIn("cluster_a", request)
+        self.assertNotIn("cluster_b", request)
+        self.assertNotIn("cue_similarity_seed", request)
+        self.assertEqual(request["cue_source_snapshot_id"], "snapshot_historical")
+        self.assertEqual(request["exemplars"], 0)
+        self.assertEqual(request["boundary"], 0)
+        self.assertEqual(generated[0].target_id, "secret_gap")
+        self.assertEqual(generated[0].method_name, "cue_retrieval_generation")
+        self.assertEqual(meta["evidence_pack"]["target_type"], "cue")
+        prompt = fake_structured.calls[0]["messages"][1]["content"]
+        self.assertNotIn("secret_gap", prompt)
 
     def test_node_explain_passes_langfuse_config_to_structured_invoke(self) -> None:
         llm = _FakeChatOpenAI(model="test-model")

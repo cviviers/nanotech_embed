@@ -118,6 +118,22 @@ class BackendApiEvaluationTests(unittest.TestCase):
         self.assertEqual(req.cue_similarity_sample_n, 4)
         self.assertEqual(req.cue_similarity_seed, "run_seed")
 
+    def test_evidence_pack_request_accepts_cue_only_target(self) -> None:
+        req = backend_api.EvidencePackRequest(
+            target_type="cue",
+            profile="focused_eval",
+            exemplars=0,
+            boundary=0,
+            diverse=0,
+            discovery_cue={"text": "Find evidence for a dual RNA and DNA nanosensor"},
+            cue_source_snapshot_id="snapshot_historical",
+        )
+
+        self.assertEqual(req.target_type, "cue")
+        self.assertIsNone(req.gap_id)
+        self.assertIsNone(req.cluster_a)
+        self.assertIsNone(req.cluster_b)
+
     def test_snapshot_and_artifact_lookup_endpoints(self) -> None:
         publish_resp = self.client.post(
             "/admin/snapshots/publish",

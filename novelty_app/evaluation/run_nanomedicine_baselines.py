@@ -22,6 +22,7 @@ DEFAULT_OUTPUT_ROOT = ARCHIVE_ROOT / "baseline_runs"
 FALLBACK_REGISTERED_METHODS = [
     "orchestrator",
     "single_shot_llm",
+    "cue_retrieval_generation",
     "retrieval_summary_direct",
     "heuristic_bridge",
     "pack_query_baseline",
@@ -40,7 +41,12 @@ def _registered_methods() -> List[str]:
 
 REGISTERED_METHODS = _registered_methods()
 DEFAULT_METHODS = list(REGISTERED_METHODS)
-OPENAI_REQUIRED_METHODS = {"orchestrator", "single_shot_llm", "retrieval_summary_direct"}
+OPENAI_REQUIRED_METHODS = {
+    "orchestrator",
+    "single_shot_llm",
+    "cue_retrieval_generation",
+    "retrieval_summary_direct",
+}
 
 PROTOCOL = {
     "cutoff_date": "2019-12-31",
@@ -220,6 +226,14 @@ def _selected_methods_require_openai(methods: Iterable[str]) -> bool:
     return bool(OPENAI_REQUIRED_METHODS.intersection(set(methods)))
 
 
+def _chat_openai_available() -> bool:
+    try:
+        from .generators import ChatOpenAI
+    except Exception:
+        return False
+    return ChatOpenAI is not None
+
+
 def _normalize_qwen_base_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
@@ -246,6 +260,11 @@ def validate_runtime_inputs(args: argparse.Namespace, *, dry_run: bool = False) 
     if needs_openai and not env.get("OPENAI_API_KEY") and not dry_run:
         required = ", ".join(method for method in methods if method in OPENAI_REQUIRED_METHODS)
         raise ValueError(f"OPENAI_API_KEY is required for selected method(s): {required}")
+    if needs_openai and not _chat_openai_available() and not dry_run:
+        raise ValueError(
+            "langchain-openai is required for the selected LLM method(s). "
+            "Run this benchmark from the project environment or install requirements.txt."
+        )
 
 
 def _subprocess_env(args: argparse.Namespace, domain: Optional[DomainConfig]) -> Dict[str, str]:
@@ -283,9 +302,11 @@ def review_packet_matches_step(path: Path, step: RunStep) -> bool:
     config = dict(run.get("config") or {})
     future_prefilter = dict(config.get("future_prefilter") or {})
     method_names = list(run.get("method_names") or [])
+    metrics = dict(run.get("metrics") or {})
     return all(
         [
             run.get("status") == "completed",
+            int(metrics.get("n_task_evaluations") or 0) > 0,
             run.get("snapshot_id") == step.domain.snapshot_id,
             method_names == [step.method],
             config.get("seeds") == PROTOCOL["seeds"],

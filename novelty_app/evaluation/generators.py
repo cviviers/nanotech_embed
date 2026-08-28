@@ -115,6 +115,29 @@ def _cluster_only_pack_request(context: GenerationContext) -> Dict[str, Any]:
     return payload
 
 
+def _cue_retrieval_pack_request(context: GenerationContext) -> Dict[str, Any]:
+    discovery_cue = discovery_cue_to_dict(context.discovery_cue)
+    if discovery_cue is None:
+        raise ValueError("cue_retrieval_generation requires an active discovery cue")
+    if not context.cue_source_snapshot_id:
+        raise ValueError("cue_retrieval_generation requires cue_source_snapshot_id")
+
+    payload: Dict[str, Any] = {
+        "snapshot_id": context.snapshot_id,
+        "target_type": "cue",
+        "profile": "focused_eval",
+        "exemplars": 0,
+        "boundary": 0,
+        "diverse": 0,
+        "counter_queries": [],
+        "discovery_cue": discovery_cue,
+        "cue_source_snapshot_id": str(context.cue_source_snapshot_id),
+        "cue_similarity_top_k": int(context.cue_similarity_top_k),
+        "cue_similarity_sample_n": int(context.cue_similarity_sample_n),
+    }
+    return payload
+
+
 def _random_control_target(context: GenerationContext) -> Dict[str, Any]:
     candidates = [dict(target) for target in (context.all_targets or [])]
     current_target_id = target_id(context.target)
@@ -311,6 +334,7 @@ def _single_shot_from_pack(
     method_name: str,
     pack_payload: Dict[str, Any],
     preamble: str = "",
+    goal: Optional[str] = None,
     target_override: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
     with observe_current(
@@ -325,8 +349,9 @@ def _single_shot_from_pack(
     llm = _llm_from_context(context)
     structured = llm.with_structured_output(HypothesesOut, method="function_calling")
     cue_block = cue_prompt_block(context.discovery_cue)
+    generation_goal = goal or f"Propose {context.hypotheses_per_target} grounded nanomedicine bridge hypotheses."
     prompt = f"""
-GOAL: Propose {context.hypotheses_per_target} grounded nanomedicine bridge hypotheses.
+GOAL: {generation_goal}
 Only use the EVIDENCE PACK provided. Cite by paper_id.
 {cue_block}
 {preamble}
@@ -372,6 +397,25 @@ def generate_single_shot_llm(context: GenerationContext) -> Tuple[List[Generated
         context,
         method_name="single_shot_llm",
         pack_payload=_pack_request(context),
+    )
+
+
+def generate_cue_retrieval_generation(
+    context: GenerationContext,
+) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
+    return _single_shot_from_pack(
+        context,
+        method_name="cue_retrieval_generation",
+        pack_payload=_cue_retrieval_pack_request(context),
+        goal=(
+            f"Use the research-direction cue as the retrieval query and propose "
+            f"{context.hypotheses_per_target} grounded, testable nanomedicine hypotheses."
+        ),
+        preamble=(
+            "This is a retrieval-first baseline. The evidence was selected from the historical corpus "
+            "using only the research-direction cue. Do not infer or mention any graph frontier, gap, "
+            "cluster, or held-out paper."
+        ),
     )
 
 
@@ -592,6 +636,7 @@ def generate_random_target_control(context: GenerationContext) -> Tuple[List[Gen
 GENERATOR_REGISTRY = {
     "orchestrator": generate_with_orchestrator,
     "single_shot_llm": generate_single_shot_llm,
+    "cue_retrieval_generation": generate_cue_retrieval_generation,
     "retrieval_summary_direct": generate_retrieval_summary_direct,
     "heuristic_bridge": generate_heuristic_bridge,
     "pack_query_baseline": generate_pack_query_baseline,

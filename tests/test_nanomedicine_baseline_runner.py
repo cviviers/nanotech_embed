@@ -21,6 +21,7 @@ def _matching_review_packet(step: runner.RunStep) -> dict:
             "cutoff_date": runner.PROTOCOL["cutoff_date"],
             "future_window_start": runner.PROTOCOL["future_window_start"],
             "future_window_end": runner.PROTOCOL["future_window_end"],
+            "metrics": {"n_task_evaluations": runner.PROTOCOL["n_gold_future_papers"]},
             "config": {
                 "seeds": runner.PROTOCOL["seeds"],
                 "hypotheses_per_target": runner.PROTOCOL["hypotheses_per_target"],
@@ -41,6 +42,7 @@ class NanomedicineBaselineRunnerTests(unittest.TestCase):
     def test_default_method_list_includes_all_registered_methods_including_orchestrator(self) -> None:
         self.assertEqual(runner.DEFAULT_METHODS, runner.REGISTERED_METHODS)
         self.assertIn("orchestrator", runner.DEFAULT_METHODS)
+        self.assertIn("cue_retrieval_generation", runner.DEFAULT_METHODS)
 
     def test_explicit_methods_limit_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,7 +94,7 @@ class NanomedicineBaselineRunnerTests(unittest.TestCase):
                 )
 
         self.assertEqual(code, 0)
-        self.assertIn("Dry run: 24 step(s) planned.", stdout.getvalue())
+        self.assertIn(f"Dry run: {4 * len(runner.DEFAULT_METHODS)} step(s) planned.", stdout.getvalue())
         self.assertFalse(popen_mock.called)
         self.assertFalse(run_mock.called)
 
@@ -130,6 +132,20 @@ class NanomedicineBaselineRunnerTests(unittest.TestCase):
             payload = _matching_review_packet(step)
             payload["run"]["method_names"] = ["heuristic_bridge"]
             packet_path = step.output_dir / "retro_eval_test_review_packet.json"
+            packet_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertIsNone(runner.completed_review_packet(step))
+
+    def test_zero_task_review_packet_is_not_considered_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            step = runner.RunStep(
+                domain=runner.DOMAIN_CONFIGS["payload"],
+                method="cue_retrieval_generation",
+                output_dir=Path(tmpdir),
+            )
+            payload = _matching_review_packet(step)
+            payload["run"]["metrics"]["n_task_evaluations"] = 0
+            packet_path = step.output_dir / "retro_eval_failed_review_packet.json"
             packet_path.write_text(json.dumps(payload), encoding="utf-8")
 
             self.assertIsNone(runner.completed_review_packet(step))
@@ -318,6 +334,23 @@ class NanomedicineBaselineRunnerTests(unittest.TestCase):
         args = runner.parse_args(["--qwen-base-url", "http://192.168.2.35:800"])
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY is required"):
+                runner.validate_runtime_inputs(args, dry_run=False)
+
+    def test_openai_backed_method_fails_early_without_langchain_openai(self) -> None:
+        args = runner.parse_args(
+            [
+                "--qwen-base-url",
+                "http://192.168.2.35:800",
+                "--methods",
+                "cue_retrieval_generation",
+            ]
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True), patch.object(
+            runner,
+            "_chat_openai_available",
+            return_value=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "langchain-openai is required"):
                 runner.validate_runtime_inputs(args, dry_run=False)
 
 
