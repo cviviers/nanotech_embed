@@ -229,6 +229,7 @@ def score_hypotheses(
     discovery_cue: Dict[str, Any] | None = None,
     openai_api_key: str | None = None,
     model_name: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     if not hypotheses:
         return {}
@@ -282,7 +283,8 @@ Return a brief rationale per criterion and an average_score for each hypothesis.
 """
 
     try:
-        llm = ChatOpenAI(model=model, api_key=api_key, temperature=0.0)
+        options = {"reasoning_effort": reasoning_effort} if reasoning_effort else {"temperature": 0.0}
+        llm = ChatOpenAI(model=model, api_key=api_key, **options)
         structured = llm.with_structured_output(HypothesisIdeaScoresOut, method="function_calling")
         messages = [
             {"role": "system", "content": SYSTEM_IDEA_SCORER},
@@ -340,7 +342,20 @@ Return a brief rationale per criterion and an average_score for each hypothesis.
 def judge_candidate_match(
     fingerprint: Dict[str, Any],
     candidate: Dict[str, Any],
+    *,
+    weights: Tuple[float, float, float] = (0.55, 0.25, 0.20),
+    thresholds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
+    if len(weights) != 3 or any(w < 0 for w in weights) or sum(weights) <= 0:
+        raise ValueError("Three nonnegative matching weights with positive sum are required")
+    weights = tuple(w / sum(weights) for w in weights)
+    limits = {"strong_rank": 0.80, "strong_overlap": 0.45, "strong_combined": 0.70,
+              "partial_rank": 0.58, "partial_overlap": 0.22, "partial_combined": 0.50,
+              "background_rank": 0.38, "background_overlap": 0.15}
+    if thresholds:
+        if set(thresholds) - set(limits) or any(not 0 <= v <= 1 for v in thresholds.values()):
+            raise ValueError("Unknown or out-of-range matching threshold")
+        limits.update(thresholds)
     candidate_fp = fingerprint_text(
         f"{candidate.get('title', '')} {candidate.get('abstract', candidate.get('text', ''))}"
     )
@@ -354,13 +369,13 @@ def judge_candidate_match(
     rerank = float(candidate.get("reranker_score", 0.0) or 0.0)
     emb = float(candidate.get("embedding_score", 0.0) or 0.0)
     emb_norm = (emb + 1.0) / 2.0
-    combined = 0.55 * rerank + 0.25 * overlap + 0.20 * emb_norm
+    combined = weights[0] * rerank + weights[1] * overlap + weights[2] * emb_norm
 
-    if rerank >= 0.80 and overlap >= 0.45 and combined >= 0.70:
+    if rerank >= limits["strong_rank"] and overlap >= limits["strong_overlap"] and combined >= limits["strong_combined"]:
         label = "strong_match"
-    elif rerank >= 0.58 and overlap >= 0.22 and combined >= 0.50:
+    elif rerank >= limits["partial_rank"] and overlap >= limits["partial_overlap"] and combined >= limits["partial_combined"]:
         label = "partial_match"
-    elif rerank >= 0.38 or overlap >= 0.15:
+    elif rerank >= limits["background_rank"] or overlap >= limits["background_overlap"]:
         label = "background_only"
     else:
         label = "no_match"

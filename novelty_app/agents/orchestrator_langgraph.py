@@ -215,6 +215,9 @@ class OrchestratorState(TypedDict, total=False):
     audit: Dict[str, Any]
     hypotheses: Dict[str, Any]
     idea_scores: Dict[str, Any]
+    hypotheses_per_target: int
+    source_assessments: Dict[str, Any]
+    source_selected_id: str | None
     blueprint: Dict[str, Any]
     published: bool
     published_artifact: Dict[str, Any]
@@ -529,7 +532,7 @@ def node_ideate(state: OrchestratorState, llm: ChatOpenAI) -> OrchestratorState:
     expl = json.dumps(state.get("explanation", {}), ensure_ascii=False)
     cue_block = cue_prompt_block(state.get("discovery_cue"))
     user = f"""
-GOAL: Propose 5 bridge hypotheses grounded in the evidence pack and the contrastive explanation.
+GOAL: Propose {state.get('hypotheses_per_target', 5)} bridge hypotheses grounded in the evidence pack and the contrastive explanation.
 EXPLANATION JSON:
 {expl}
 
@@ -564,6 +567,7 @@ def node_score(
     *,
     openai_api_key: str | None = None,
     model_name: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> OrchestratorState:
     hypotheses = list((state.get("hypotheses") or {}).get("hypotheses") or [])
     with observe_current(
@@ -594,6 +598,7 @@ def node_score(
             discovery_cue=discovery_cue_to_dict(state.get("discovery_cue")),
             openai_api_key=openai_api_key,
             model_name=model_name,
+            reasoning_effort=reasoning_effort,
         )
         state["idea_scores"] = scores
         for hyp in hypotheses:
@@ -620,7 +625,14 @@ def node_blueprint(state: OrchestratorState, llm: ChatOpenAI) -> OrchestratorSta
         ),
         reverse=True,
     )
-    h1 = ranked_hyps[0]
+    if "source_selected_id" in state:
+        chosen = state["source_selected_id"]
+        if chosen is None:
+            state["blueprint"] = {}
+            return state
+        h1 = next(h for h in hyps if str(h.get("id")) == chosen)
+    else:
+        h1 = ranked_hyps[0]
     cue_block = cue_prompt_block(state.get("discovery_cue"))
     user = f"""
 HYPOTHESIS JSON:
@@ -670,6 +682,8 @@ def node_publish(state: OrchestratorState, backend: BackendClient) -> Orchestrat
         "audit": state.get("audit", {}),
         "hypotheses": state.get("hypotheses", {}),
         "idea_scores": state.get("idea_scores", {}),
+        "source_assessments": state.get("source_assessments", {}),
+        "source_selected_id": state.get("source_selected_id"),
         "blueprint": state.get("blueprint", {}),
         "iterations": state.get("iter", 0),
         "trace_ref": dict(state.get("run_trace_ref") or {}),
@@ -755,6 +769,9 @@ def build_orchestrator(
     *,
     openai_api_key: str | None = None,
     model_name: str | None = None,
+    reasoning_effort: str | None = None,
+    ideation_model: str | None = None,
+    assessment_callback: Any = None,
 ) -> Any:
     if ChatOpenAI is None or StateGraph is None or END is None:
         raise ImportError(
@@ -764,7 +781,9 @@ def build_orchestrator(
 
     model = model_name or os.getenv("OPENAI_MODEL", "gpt-5")
     llm_kwargs: Dict[str, Any] = {"model": model, "temperature": 0.2}
-    ideate_llm_kwargs: Dict[str, Any] = {"model": "gpt-5.4-2026-03-05", "reasoning": {"effort": "medium"}}
+    if reasoning_effort:
+        llm_kwargs = {"model": model, "reasoning_effort": reasoning_effort}
+    ideate_llm_kwargs: Dict[str, Any] = dict(llm_kwargs, model=ideation_model or model)
     if openai_api_key:
         llm_kwargs["api_key"] = openai_api_key
         ideate_llm_kwargs["api_key"] = openai_api_key
@@ -778,7 +797,7 @@ def build_orchestrator(
     g.add_node("audit", lambda s: node_audit(s, llm))
     g.add_node("patch_retrieve", lambda s: node_patch_retrieve(s, backend))
     g.add_node("ideate", lambda s: node_ideate(s, ideate_llm))
-    g.add_node("score", lambda s: node_score(s, openai_api_key=openai_api_key, model_name=model))
+    g.add_node("score", lambda s: node_score(s, openai_api_key=openai_api_key, model_name=model, reasoning_effort=reasoning_effort))
     g.add_node("blueprint", lambda s: node_blueprint(s, llm))
     g.add_node("publish", lambda s: node_publish(s, backend))
 
@@ -788,7 +807,12 @@ def build_orchestrator(
     g.add_conditional_edges("audit", route_after_audit, {"patch": "patch_retrieve", "ideate": "ideate"})
     g.add_edge("patch_retrieve", "explain")
     g.add_edge("ideate", "score")
-    g.add_edge("score", "blueprint")
+    if assessment_callback is not None:
+        g.add_node("source_assessment", assessment_callback)
+        g.add_edge("score", "source_assessment")
+        g.add_edge("source_assessment", "blueprint")
+    else:
+        g.add_edge("score", "blueprint")
     g.add_edge("blueprint", "publish")
     g.add_edge("publish", END)
 

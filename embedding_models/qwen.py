@@ -367,6 +367,7 @@ class RankResponse(BaseModel):
     instruction: Optional[str]
     qwen_model_reranker: str
     qwen_model_embedding: Optional[str] = None
+    used_embedding_fallback: bool = False
     results: List[RankedDocument]
 
 
@@ -560,6 +561,7 @@ def rank_documents(payload: RankRequest):
         instruction=payload.instruction,
         qwen_model_reranker=RERANK_MODEL_NAME,
         qwen_model_embedding=EMBED_MODEL_NAME if embedding_scores is not None else None,
+        used_embedding_fallback=reranker_error is not None,
         results=results_sorted,
     )
 

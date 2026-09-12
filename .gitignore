@@ -12,6 +12,7 @@ lda_visualizations/*
 lda_models/*
 output/*
 venv/*
+.venv-controlled/
 .gradio/*
 .streamlit/*
 

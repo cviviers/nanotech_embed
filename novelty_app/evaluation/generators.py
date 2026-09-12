@@ -64,6 +64,8 @@ class GenerationContext:
     hypotheses_per_target: int = 3
     all_clusters: Optional[Sequence[int]] = None
     all_targets: Optional[Sequence[Dict[str, Any]]] = None
+    reasoning_effort: Optional[str] = None
+    frozen_evidence_pack: Optional[Dict[str, Any]] = None
 
 
 def target_id(target: Dict[str, Any]) -> str:
@@ -180,6 +182,9 @@ def _llm_from_context(context: GenerationContext) -> ChatOpenAI:
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required for this generation method")
     kwargs["api_key"] = api_key
+    if context.reasoning_effort:
+        kwargs.pop("temperature", None)
+        kwargs["reasoning_effort"] = context.reasoning_effort
     return ChatOpenAI(**kwargs)
 
 
@@ -275,10 +280,13 @@ def _langchain_config(
 
 
 def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
+    if context.frozen_evidence_pack is not None:
+        raise ValueError("Adaptive orchestration cannot replay frozen packs; use the controlled contrastive condition")
     app = build_orchestrator(
         context.backend,
         openai_api_key=context.openai_api_key or os.getenv("OPENAI_API_KEY"),
         model_name=context.model_name,
+        reasoning_effort=context.reasoning_effort,
     )
     state: Dict[str, Any] = {
         "snapshot_id": context.snapshot_id,
@@ -295,6 +303,7 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
         "cue_similarity_seed": context.cue_similarity_seed,
         "required_paper_ids": list(context.required_paper_ids or []),
         "required_paper_source_snapshot_id": context.required_paper_source_snapshot_id,
+        "hypotheses_per_target": context.hypotheses_per_target,
     }
     if context.target["target_type"] == "gap":
         state["gap_id"] = context.target["gap_id"]
@@ -336,6 +345,7 @@ def _single_shot_from_pack(
     preamble: str = "",
     goal: Optional[str] = None,
     target_override: Optional[Dict[str, Any]] = None,
+    supplied_pack: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
     with observe_current(
         name=f"{method_name}_evidence_pack",
@@ -343,7 +353,9 @@ def _single_shot_from_pack(
         input_payload=pack_payload,
         metadata=_trace_metadata(context, method_name=method_name, target=target_override),
     ) as pack_observation:
-        backend_pack = context.backend.evidence_pack(pack_payload)
+        backend_pack = supplied_pack if supplied_pack is not None else context.frozen_evidence_pack
+        if backend_pack is None:
+            backend_pack = context.backend.evidence_pack(pack_payload)
         pack_observation.update(output=_pack_summary(backend_pack))
     papers = backend_pack.get("papers", [])
     llm = _llm_from_context(context)
@@ -427,7 +439,9 @@ def generate_retrieval_summary_direct(context: GenerationContext) -> Tuple[List[
         input_payload=pack_payload,
         metadata=_trace_metadata(context, method_name="retrieval_summary_direct"),
     ) as pack_observation:
-        backend_pack = context.backend.evidence_pack(pack_payload)
+        backend_pack = context.frozen_evidence_pack
+        if backend_pack is None:
+            backend_pack = context.backend.evidence_pack(pack_payload)
         pack_observation.update(output=_pack_summary(backend_pack))
     papers = backend_pack.get("papers", [])
     llm = _llm_from_context(context)
@@ -467,6 +481,7 @@ EVIDENCE PACK (JSONL):
         method_name="retrieval_summary_direct",
         pack_payload=_pack_request(context),
         preamble=f"Use this retrieval-only summary as context:\n{summary}",
+        supplied_pack=backend_pack,
     )
 
 

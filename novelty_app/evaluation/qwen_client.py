@@ -123,6 +123,7 @@ class QwenClient:
         top_k: Optional[int] = None,
         return_embedding_similarity: bool = True,
         normalize_embeddings: bool = True,
+        require_reranker: bool = False,
     ) -> List[Dict[str, Any]]:
         data = self._post(
             "/rank",
@@ -135,4 +136,6 @@ class QwenClient:
                 "normalize_embeddings": normalize_embeddings,
             },
         )
+        if require_reranker and data.get("used_embedding_fallback") is not False:
+            raise RuntimeError("Strict matching requires reranker execution and fallback metadata; restart the updated Qwen service")
         return data.get("results", [])
